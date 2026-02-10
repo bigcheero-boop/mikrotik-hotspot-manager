@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:3001}
+        - VITE_API_BASE_URL=${VITE_API_BASE_URL:-https://skynity.org}
     expose:
       - "3000"
     restart: unless-stopped
@@ -12,39 +12,47 @@ services:
       - api
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.mikrotik.rule=Host(`skynity.org`)"
-      - "traefik.http.routers.mikrotik.entrypoints=websecure"
-      - "traefik.http.routers.mikrotik.tls=true"
-      - "traefik.http.routers.mikrotik.tls.certresolver=le"
-      - "traefik.http.services.mikrotik.loadbalancer.server.port=3000"
-      - "traefik.http.routers.mikrotik-http.rule=Host(`skynity.org`)"
-      - "traefik.http.routers.mikrotik-http.entrypoints=web"
-      - "traefik.http.routers.mikrotik-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.skynity-app.rule=Host(`${APP_DOMAIN:-skynity.org}`)"
+      - "traefik.http.routers.skynity-app.entrypoints=websecure"
+      - "traefik.http.routers.skynity-app.tls=true"
+      - "traefik.http.routers.skynity-app.tls.certresolver=letsencrypt"
+      - "traefik.http.services.skynity-app.loadbalancer.server.port=3000"
+      - "traefik.http.routers.skynity-app-http.rule=Host(`${APP_DOMAIN:-skynity.org}`)"
+      - "traefik.http.routers.skynity-app-http.entrypoints=web"
+      - "traefik.http.routers.skynity-app-http.middlewares=redirect-to-https"
       - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
     networks:
-      - traefik
+      - dokploy-network
       - mikrotik-network
 
   api:
     build:
       context: ./server
       dockerfile: Dockerfile
-    container_name: mikrotik_api
     expose:
       - "3000"
     environment:
       - DATABASE_URL=postgres://${POSTGRES_USER:-mikrotik_user}:${POSTGRES_PASSWORD:-MikroTik2024SecurePass}@postgres:5432/${POSTGRES_DB:-mikrotik_db}
       - PORT=3000
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.skynity-api.rule=Host(`${APP_DOMAIN:-skynity.org}`) && PathPrefix(`/make-server-4f18e215`)"
+      - "traefik.http.routers.skynity-api.entrypoints=websecure"
+      - "traefik.http.routers.skynity-api.tls=true"
+      - "traefik.http.routers.skynity-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.skynity-api.loadbalancer.server.port=3000"
     networks:
+      - dokploy-network
       - mikrotik-network
 
   postgres:
     image: postgres:15-alpine
-    container_name: mikrotik_postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-mikrotik_db}
@@ -52,9 +60,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-MikroTik2024SecurePass}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # NOTE: Postgres is now internal-only (no host port mapping)
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mikrotik_user -d mikrotik_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mikrotik_user} -d ${POSTGRES_DB:-mikrotik_db}"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -64,12 +71,10 @@ services:
 
   pgadmin:
     image: dpage/pgadmin4
-    container_name: mikrotik_pgadmin
     restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@skynity.org}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-AdminSkynity2024}
-    # PGAdmin is internal-only; access via WireGuard or Traefik (if you add labels)
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     depends_on:
@@ -80,20 +85,23 @@ services:
 
   wireguard:
     image: linuxserver/wireguard
-    container_name: mikrotik_wireguard
     cap_add:
       - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
     environment:
       - PUID=1000
       - PGID=1000
       - TZ=${TZ:-Asia/Dhaka}
-      - SERVERURL=${WIREGUARD_SERVERURL:-skynity.org}
+      - SERVERURL=${WIREGUARD_SERVERURL:-46.202.166.89}
       - SERVERPORT=${WIREGUARD_SERVERPORT:-51820}
       - PEERS=${WIREGUARD_PEERS:-3}
       - PEERDNS=${WIREGUARD_PEERDNS:-1.1.1.1}
       - INTERNAL_SUBNET=${WIREGUARD_INTERNAL_SUBNET:-10.13.13.0}
     volumes:
       - wireguard_config:/config
+      - /lib/modules:/lib/modules:ro
     ports:
       - "51820:51820/udp"
     restart: unless-stopped
@@ -103,7 +111,7 @@ services:
 networks:
   mikrotik-network:
     driver: bridge
-  traefik:
+  dokploy-network:
     external: true
 volumes:
   pgdata:
